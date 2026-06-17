@@ -1,17 +1,35 @@
 import time
 import math
+import copy
+import random
 import mujoco
 import mujoco.viewer
 
-# 1. THE GENOME STRUCTURE
-# A Python list of dictionaries representing a 'Genome'.
-# Each item in the list represents a body segment.
-genome = [
-    {"length": 0.4, "radius": 0.08, "joint_axis": "0 1 0", "color": "0.8 0.2 0.2 1"},
-    {"length": 0.3, "radius": 0.06, "joint_axis": "0 1 0", "color": "0.2 0.8 0.2 1"},
-    {"length": 0.3, "radius": 0.05, "joint_axis": "1 0 0", "color": "0.2 0.2 0.8 1"},
-    {"length": 0.2, "radius": 0.04, "joint_axis": "0 1 0", "color": "0.8 0.8 0.2 1"}
+# 1. POPULATION AND GENOME STRUCTURE
+# Maintain a population of 5 different individuals.
+# Expand the Genome to include Morphological Traits and Control Traits.
+base_genome = [
+    {"length": 0.4, "radius": 0.08, "joint_axis": "0 1 0", "color": "0.8 0.2 0.2 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 0.0},
+    {"length": 0.3, "radius": 0.06, "joint_axis": "0 1 0", "color": "0.2 0.8 0.2 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 1.0},
+    {"length": 0.3, "radius": 0.05, "joint_axis": "1 0 0", "color": "0.2 0.2 0.8 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 2.0},
+    {"length": 0.2, "radius": 0.04, "joint_axis": "0 1 0", "color": "0.8 0.8 0.2 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 3.0}
 ]
+
+def mutate_genome(genome):
+    """
+    Clones the genome and applies small random mathematical variance (mutation) to its traits.
+    """
+    new_genome = copy.deepcopy(genome)
+    for seg in new_genome:
+        # Mutate morphological traits
+        seg["length"] = max(0.05, seg["length"] + random.uniform(-0.05, 0.05))
+        seg["radius"] = max(0.01, seg["radius"] + random.uniform(-0.01, 0.01))
+        # Mutate control traits
+        seg["amplitude"] = max(0.0, seg["amplitude"] + random.uniform(-0.2, 0.2))
+        seg["frequency"] = max(0.1, seg["frequency"] + random.uniform(-1.0, 1.0))
+        seg["phase_offset"] += random.uniform(-0.5, 0.5)
+    return new_genome
+
 
 # 2. PROCEDURAL XML COMPILER
 def generate_creature_mjcf(genome_specs):
@@ -71,53 +89,96 @@ def generate_creature_mjcf(genome_specs):
     return '\n'.join(xml)
 
 
-def main():
-    # Generate the XML
+def evaluate_creature(genome, creature_id, gen_num, best_dist):
+    """
+    Compiles the creature's XML, resets physics, and runs the simulation loop for a fixed window.
+    Calculates fitness as the absolute distance traveled along the X-axis.
+    """
     mjcf_string = generate_creature_mjcf(genome)
-    print("Generated MJCF XML:")
-    print(mjcf_string)
-    
-    # 3. THE RUNTIME GAME LOOP
-    # Compile the XML string dynamically
     model = mujoco.MjModel.from_xml_string(mjcf_string)
-    
-    # Initialize the physics data
     data = mujoco.MjData(model)
     
-    # Launch a passive 3D interactive rendering window
-    print("\nLaunching MuJoCo viewer...")
+    steps = 400  # fixed simulation window (400 physics steps)
+    
     try:
+        # Launch passive viewer for the evaluation
         with mujoco.viewer.launch_passive(model, data) as viewer:
-            # Run the simulation loop
-            while viewer.is_running():
+            for step in range(steps):
                 step_start = time.time()
-                
-                # Primitive 'brain' script:
-                # Apply a simple oscillating sine wave with slightly offset phases to each motor actuator
                 t = data.time
-                for i in range(model.nu):
-                    data.ctrl[i] = math.sin(t * 5.0 + i)
-                    
-                # Step the physics
-                mujoco.mj_step(model, data)
                 
-                # Synchronize the frame with the viewer
+                # Apply brain control
+                for i in range(model.nu):
+                    seg = genome[i + 1] # motor_i corresponds to segment_i+1
+                    data.ctrl[i] = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
+                    
+                mujoco.mj_step(model, data)
                 viewer.sync()
                 
-                # Maintain roughly realtime simulation speed
                 time_until_next_step = model.opt.timestep - (time.time() - step_start)
                 if time_until_next_step > 0:
                     time.sleep(time_until_next_step)
     except Exception as e:
-        # If running in a headless environment without a display, this might fail.
-        print("Viewer exited or failed to launch:", e)
-        print("Running headless simulation for 1000 steps instead...")
-        for _ in range(1000):
+        # Headless fallback if viewer fails to launch (e.g., in CI environments)
+        for step in range(steps):
             t = data.time
             for i in range(model.nu):
-                data.ctrl[i] = math.sin(t * 5.0 + i)
+                seg = genome[i + 1]
+                data.ctrl[i] = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
             mujoco.mj_step(model, data)
-        print("Headless simulation complete.")
+
+    # Calculate absolute distance traveled along the X-axis from start
+    # data.qpos[0] is the X position of the root freejoint
+    fitness = abs(data.qpos[0])
+    return fitness
+
+
+def main():
+    population_size = 5
+    
+    # Initialize Population
+    population = [copy.deepcopy(base_genome)]
+    for _ in range(population_size - 1):
+        population.append(mutate_genome(base_genome))
+        
+    generation = 1
+    best_distance_ever = 0.0
+    
+    # 4. CONTINUOUS ENGINE: Infinite loop
+    while True:
+        print(f"\n{'='*40}")
+        print(f"--- STARTING GENERATION {generation} ---")
+        print(f"{'='*40}")
+        
+        fitness_scores = []
+        
+        # 2. SEQUENTIAL FITNESS EVALUATION
+        for i, genome in enumerate(population):
+            print(f"[Gen {generation}] Evaluating Creature {i} (Current Best: {best_distance_ever:.4f})...")
+            fitness = evaluate_creature(genome, i, generation, best_distance_ever)
+            fitness_scores.append((fitness, genome, i))
+            
+        # 3. SELECTION AND MUTATION
+        # Sort descending by fitness (Distance Traveled)
+        fitness_scores.sort(key=lambda x: x[0], reverse=True)
+        
+        print("\n--- GENERATION SUMMARY ---")
+        for rank, (fit, _, cid) in enumerate(fitness_scores):
+            print(f"Rank {rank+1}: Creature {cid} | Distance: {fit:.4f}")
+            
+        elite_fitness, elite_genome, elite_id = fitness_scores[0]
+        
+        if elite_fitness > best_distance_ever:
+            best_distance_ever = elite_fitness
+            print(f">>> NEW BEST DISTANCE: {best_distance_ever:.4f} <<<")
+            
+        # Reproduction
+        new_population = [copy.deepcopy(elite_genome)] # Save the elite
+        for _ in range(population_size - 1):
+            new_population.append(mutate_genome(elite_genome))
+            
+        population = new_population
+        generation += 1
 
 if __name__ == "__main__":
     main()
