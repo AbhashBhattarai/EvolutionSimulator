@@ -1,0 +1,39 @@
+Wed Jun 17 15:04:48 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:04:58 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:20:46 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:21:25 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:21:34 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:21:44 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:22:14 2026
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.5740.
+
+Wed Jun 17 15:22:14 2026
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.5740.
+
+Wed Jun 17 15:22:15 2026
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.5740.
+
+Wed Jun 17 15:22:59 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:23:06 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:46:29 2026
+ERROR: could not initialize GLFW
+
+Wed Jun 17 15:46:36 2026
+ERROR: could not initialize GLFW
+
