@@ -89,7 +89,7 @@ def generate_creature_mjcf(genome_specs):
     return '\n'.join(xml)
 
 
-def evaluate_creature(genome, creature_id, gen_num, best_dist):
+def evaluate_creature(genome):
     """
     Compiles the creature's XML, resets physics, and runs the simulation loop for a fixed window.
     Calculates fitness as the absolute distance traveled along the X-axis.
@@ -155,7 +155,7 @@ def main():
         # 2. SEQUENTIAL FITNESS EVALUATION
         for i, genome in enumerate(population):
             print(f"[Gen {generation}] Evaluating Creature {i} (Current Best: {best_distance_ever:.4f})...")
-            fitness = evaluate_creature(genome, i, generation, best_distance_ever)
+            fitness = evaluate_creature(genome)
             fitness_scores.append((fitness, genome, i))
             
         # 3. SELECTION AND MUTATION
