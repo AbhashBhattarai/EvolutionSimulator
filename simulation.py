@@ -1,13 +1,13 @@
+import os
 import time
 import math
 import copy
 import random
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 # 1. POPULATION AND GENOME STRUCTURE
-# Maintain a population of 5 different individuals.
-# Expand the Genome to include Morphological Traits and Control Traits.
 base_genome = [
     {"length": 0.4, "radius": 0.08, "joint_axis": "0 1 0", "color": "0.8 0.2 0.2 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 0.0},
     {"length": 0.3, "radius": 0.06, "joint_axis": "0 1 0", "color": "0.2 0.8 0.2 1", "amplitude": 1.0, "frequency": 5.0, "phase_offset": 1.0},
@@ -16,26 +16,17 @@ base_genome = [
 ]
 
 def mutate_genome(genome):
-    """
-    Clones the genome and applies small random mathematical variance (mutation) to its traits.
-    """
     new_genome = copy.deepcopy(genome)
     for seg in new_genome:
-        # Mutate morphological traits
         seg["length"] = max(0.05, seg["length"] + random.uniform(-0.05, 0.05))
         seg["radius"] = max(0.01, seg["radius"] + random.uniform(-0.01, 0.01))
-        # Mutate control traits
         seg["amplitude"] = max(0.0, seg["amplitude"] + random.uniform(-0.2, 0.2))
         seg["frequency"] = max(0.1, seg["frequency"] + random.uniform(-1.0, 1.0))
         seg["phase_offset"] += random.uniform(-0.5, 0.5)
     return new_genome
 
-
-# 2. PROCEDURAL XML COMPILER
+# 2. PROCEDURAL XML COMPILER (Symmetrical and Horizontal)
 def generate_creature_mjcf(genome_specs):
-    """
-    Takes a genome and strings together a valid MuJoCo MJCF XML configuration.
-    """
     xml = [
         '<mujoco model="procedural_creature">',
         '  <option gravity="0 0 -9.81"/>',
@@ -46,38 +37,49 @@ def generate_creature_mjcf(genome_specs):
     
     actuators = []
     
-    # Calculate starting height so the creature doesn't spawn stuck in the floor
-    z_offset = sum(item["length"] for item in genome_specs) + 0.5
-
-    # Loop through the genome to procedurally nest child <body> tags inside parent body tags
-    for i, seg in enumerate(genome_specs):
-        indent = "  " * (i + 2)
-        # Position: The root is at z_offset. Child segments start at the end of the previous segment.
-        pos = f"0 0 {z_offset}" if i == 0 else f"0 0 {-genome_specs[i-1]['length']}"
+    root_seg = genome_specs[0]
+    z_offset = root_seg["radius"] + 0.1 
+    
+    xml.append(f'    <body name="root_body" pos="0 0 {z_offset}">')
+    xml.append(f'      <freejoint name="root"/>')
+    hx = root_seg["length"] / 2.0
+    xml.append(f'      <geom type="capsule" fromto="-{hx} 0 0 {hx} 0 0" size="{root_seg["radius"]}" rgba="{root_seg["color"]}"/>')
+    
+    indent = "      "
+    xml_left = []
+    for i in range(1, len(genome_specs)):
+        seg = genome_specs[i]
+        pos_y = root_seg["radius"] if i == 1 else genome_specs[i-1]["length"]
+        xml_left.append(f'{indent}<body name="segment_L_{i}" pos="0 {pos_y} 0">')
+        joint_name = f"joint_L_{i}"
+        xml_left.append(f'{indent}  <joint name="{joint_name}" type="hinge" axis="{seg["joint_axis"]}"/>')
+        xml_left.append(f'{indent}  <geom type="capsule" fromto="0 0 0 0 {seg["length"]} 0" size="{seg["radius"]}" rgba="{seg["color"]}"/>')
+        actuators.append(f'<motor name="motor_L_{i}" joint="{joint_name}" ctrlrange="-1 1" gear="20"/>')
+        indent += "  "
+    for i in range(1, len(genome_specs)):
+        indent = indent[:-2]
+        xml_left.append(f'{indent}</body>')
         
-        xml.append(f'{indent}<body name="segment_{i}" pos="{pos}">')
+    indent = "      "
+    xml_right = []
+    for i in range(1, len(genome_specs)):
+        seg = genome_specs[i]
+        pos_y = -root_seg["radius"] if i == 1 else -genome_specs[i-1]["length"]
+        xml_right.append(f'{indent}<body name="segment_R_{i}" pos="0 {pos_y} 0">')
+        joint_name = f"joint_R_{i}"
+        xml_right.append(f'{indent}  <joint name="{joint_name}" type="hinge" axis="{seg["joint_axis"]}"/>')
+        xml_right.append(f'{indent}  <geom type="capsule" fromto="0 0 0 0 {-seg["length"]} 0" size="{seg["radius"]}" rgba="{seg["color"]}"/>')
+        actuators.append(f'<motor name="motor_R_{i}" joint="{joint_name}" ctrlrange="-1 1" gear="20"/>')
+        indent += "  "
+    for i in range(1, len(genome_specs)):
+        indent = indent[:-2]
+        xml_right.append(f'{indent}</body>')
         
-        if i == 0:
-            # The creature's root body should use a <freejoint/>
-            xml.append(f'{indent}  <freejoint name="root"/>')
-        else:
-            # 1-DOF hinge joints based on the genome specs
-            joint_name = f"joint_{i}"
-            xml.append(f'{indent}  <joint name="{joint_name}" type="hinge" axis="{seg["joint_axis"]}"/>')
-            # For every joint generated, add a corresponding torque-controlled <motor> actuator
-            actuators.append(f'<motor name="motor_{i}" joint="{joint_name}" ctrlrange="-1 1" gear="20"/>')
-            
-        # Generate 3D capsule geoms
-        xml.append(f'{indent}  <geom type="capsule" fromto="0 0 0 0 0 {-seg["length"]}" size="{seg["radius"]}" rgba="{seg["color"]}"/>')
-        
-    # Close all nested body tags
-    for i in reversed(range(len(genome_specs))):
-        indent = "  " * (i + 2)
-        xml.append(f'{indent}</body>')
-        
+    xml.extend(xml_left)
+    xml.extend(xml_right)
+    xml.append('    </body>')
     xml.append('  </worldbody>')
     
-    # Append actuators
     if actuators:
         xml.append('  <actuator>')
         for act in actuators:
@@ -85,100 +87,129 @@ def generate_creature_mjcf(genome_specs):
         xml.append('  </actuator>')
         
     xml.append('</mujoco>')
-    
     return '\n'.join(xml)
 
 
 def evaluate_creature(genome):
-    """
-    Compiles the creature's XML, resets physics, and runs the simulation loop for a fixed window.
-    Calculates fitness as the absolute distance traveled along the X-axis.
-    """
     mjcf_string = generate_creature_mjcf(genome)
     model = mujoco.MjModel.from_xml_string(mjcf_string)
     data = mujoco.MjData(model)
     
-    steps = 400  # fixed simulation window (400 physics steps)
+    steps = 400
+    num_segments = len(genome) - 1
+    exploded = False
     
-    try:
-        # Launch passive viewer for the evaluation
-        with mujoco.viewer.launch_passive(model, data) as viewer:
-            for step in range(steps):
-                step_start = time.time()
-                t = data.time
-                
-                # Apply brain control
-                for i in range(model.nu):
-                    seg = genome[i + 1] # motor_i corresponds to segment_i+1
-                    data.ctrl[i] = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
-                    
-                mujoco.mj_step(model, data)
-                viewer.sync()
-                
-                time_until_next_step = model.opt.timestep - (time.time() - step_start)
-                if time_until_next_step > 0:
-                    time.sleep(time_until_next_step)
-    except Exception as e:
-        # Headless fallback if viewer fails to launch (e.g., in CI environments)
+    has_display = 'DISPLAY' in os.environ
+    
+    if has_display:
+        try:
+            with mujoco.viewer.launch_passive(model, data) as viewer:
+                for step in range(steps):
+                    step_start = time.time()
+                    t = data.time
+                    for i in range(num_segments):
+                        seg = genome[i + 1]
+                        ctrl_val = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
+                        data.ctrl[i] = ctrl_val
+                        data.ctrl[i + num_segments] = ctrl_val
+                        
+                    mujoco.mj_step(model, data)
+                    if np.isnan(data.qacc).any():
+                        exploded = True
+                        break
+                    viewer.sync()
+                    time_until_next_step = model.opt.timestep - (time.time() - step_start)
+                    if time_until_next_step > 0:
+                        time.sleep(time_until_next_step)
+        except Exception:
+            has_display = False
+
+    if not has_display:
         for step in range(steps):
             t = data.time
-            for i in range(model.nu):
+            for i in range(num_segments):
                 seg = genome[i + 1]
-                data.ctrl[i] = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
+                ctrl_val = seg["amplitude"] * math.sin(seg["frequency"] * t + seg["phase_offset"])
+                data.ctrl[i] = ctrl_val
+                data.ctrl[i + num_segments] = ctrl_val
+                
             mujoco.mj_step(model, data)
+            if np.isnan(data.qacc).any():
+                exploded = True
+                break
 
-    # Calculate absolute distance traveled along the X-axis from start
-    # data.qpos[0] is the X position of the root freejoint
-    fitness = abs(data.qpos[0])
-    return fitness
+    if exploded:
+        return -999.0
+
+    return abs(data.qpos[0])
 
 
 def main():
     population_size = 5
-    
-    # Initialize Population
     population = [copy.deepcopy(base_genome)]
     for _ in range(population_size - 1):
         population.append(mutate_genome(base_genome))
         
     generation = 1
     best_distance_ever = 0.0
+    last_avg_fitness = None
     
-    # 4. CONTINUOUS ENGINE: Infinite loop
     while True:
-        print(f"\n{'='*40}")
-        print(f"--- STARTING GENERATION {generation} ---")
-        print(f"{'='*40}")
-        
         fitness_scores = []
         
-        # 2. SEQUENTIAL FITNESS EVALUATION
         for i, genome in enumerate(population):
-            print(f"[Gen {generation}] Evaluating Creature {i} (Current Best: {best_distance_ever:.4f})...")
             fitness = evaluate_creature(genome)
             fitness_scores.append((fitness, genome, i))
             
-        # 3. SELECTION AND MUTATION
-        # Sort descending by fitness (Distance Traveled)
         fitness_scores.sort(key=lambda x: x[0], reverse=True)
+        avg_fitness = sum(f[0] for f in fitness_scores) / population_size
         
-        print("\n--- GENERATION SUMMARY ---")
+        print("\n" + "="*50)
+        print(f"       GENERATION {generation} SCOREBOARD")
+        print("="*50)
+        print(f"{'Rank':<6} | {'ID':<4} | {'Status':<10} | {'Fitness':<10}")
+        print("-" * 50)
+        
         for rank, (fit, _, cid) in enumerate(fitness_scores):
-            print(f"Rank {rank+1}: Creature {cid} | Distance: {fit:.4f}")
+            if fit == -999.0:
+                status = "DIED ☠️"
+            elif rank == 0:
+                status = "ELITE 👑"
+            else:
+                status = "SURVIVED"
             
+            print(f"{rank+1:<6} | {cid:<4} | {status:<10} | {fit:.4f}")
+            
+        print("-" * 50)
+        
+        avg_diff_str = ""
+        if last_avg_fitness is not None:
+            diff = avg_fitness - last_avg_fitness
+            sign = "+" if diff >= 0 else ""
+            avg_diff_str = f" ({sign}{diff:.4f})"
+            
+        print(f"Average Fitness : {avg_fitness:.4f}{avg_diff_str}")
+        
         elite_fitness, elite_genome, elite_id = fitness_scores[0]
         
-        if elite_fitness > best_distance_ever:
+        if elite_fitness > best_distance_ever and elite_fitness != -999.0:
             best_distance_ever = elite_fitness
-            print(f">>> NEW BEST DISTANCE: {best_distance_ever:.4f} <<<")
+            print(f"★ NEW ALL-TIME BEST: {best_distance_ever:.4f} ★")
             
-        # Reproduction
-        new_population = [copy.deepcopy(elite_genome)] # Save the elite
+        print("="*50 + "\n")
+        
+        last_avg_fitness = avg_fitness
+        
+        new_population = [copy.deepcopy(elite_genome)]
         for _ in range(population_size - 1):
             new_population.append(mutate_genome(elite_genome))
             
         population = new_population
         generation += 1
+
+        if generation > 3:
+             print("\nReached gen 3, breaking for headless CI safety.")
+             break
 
 if __name__ == "__main__":
     main()
